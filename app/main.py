@@ -1,6 +1,14 @@
 import json
 import sys
 
+import hashlib
+import bencodepy
+import requests
+
+import struct
+import socket
+
+
 def decode_bencode(bencoded_value):
 
     def extract_string(data):
@@ -27,7 +35,6 @@ def decode_bencode(bencoded_value):
                 data = remain
             return lst, data[1:]
         # Instance for dictionary
-        # For example, {"hello": 52, "foo":"bar"} would be encoded as: d3:foo3:bar5:helloi52ee (note that the keys were reordered). d3:foo3:bar5:helloi52ee -> {"foo":"bar","hello":52}
         elif data.startswith(b'd'):
             data = data[1:]
             my_dict = {}
@@ -47,10 +54,24 @@ def extract_torrent(file):
         torrent_content = torrent_file.read()
     torrent = decode_bencode(torrent_content)
     torrent_url = torrent["announce"].decode()
+    torrent_piece_length = torrent["info"]["piece length"]
+    torrent_piece_hashes = torrent["info"]["pieces"]
     torrent_length = torrent["info"]["length"]
-    torrent_info = decode_bencode(torrent["info"])
+    torrent_info_decoded = torrent["info"]
 
-    return torrent_url, torrent_length
+    
+    torrent_info_encoded = bencodepy.encode(torrent_info_decoded)
+
+    info_sha1 = hashlib.sha1(torrent_info_encoded).hexdigest()
+
+    return torrent_url, torrent_length, info_sha1, torrent_piece_length, torrent_piece_hashes.hex()
+
+def send_tracker_response(interval, peers):
+    # Create a response dictionary
+    response = {
+        'interval': interval,  # The update interval in seconds
+        'peers': peers,        # A list of peers or a compact representation
+    }
 
 
 def main():
@@ -67,9 +88,50 @@ def main():
         print(json.dumps(decode_bencode(bencoded_value), default=bytes_to_str))
     elif command == "info":
         file_name = sys.argv[2]
-        tracker_url, torrent_length = extract_torrent(file_name)
+        tracker_url, torrent_length, info_hex, piece_length, piece_hashes = extract_torrent(file_name)
         print("Tracker URL:", tracker_url)
         print("Length:", torrent_length)
+        print("Info Hash:", info_hex)
+        print("Piece Length:", piece_length)
+        print("Piece Hashes", piece_hashes)
+    elif command == "peers":
+        file = sys.argv[2]
+        with open(file, "rb") as torrent_file:
+            torrent_content = torrent_file.read()
+        torrent = decode_bencode(torrent_content)
+
+        tracker_url = torrent["announce"]
+
+        torrent_length = torrent["info"]["length"]
+        info = torrent["info"]  
+        torrent_info_encoded = bencodepy.encode(info)
+        info_sha1 = hashlib.sha1(torrent_info_encoded).hexdigest()
+        info_byte = bytes.fromhex(info_sha1)
+
+        print("Tracker url:", tracker_url)
+        print("Info Hash:", info_byte)
+        print("Length:", torrent_length)
+
+        query_params = {
+            'info_hash': info_byte,
+            'peer_id': '00112233445566778899',
+            'port': 6881,
+            'uploaded': 0,
+            'downloaded': 0,
+            'left': torrent_length,
+            'compact': 1,
+        }
+
+        request = requests.get(tracker_url, params=query_params)
+
+        raw_content = request.content
+
+        raw_content_decoded = decode_bencode(raw_content)
+
+        print("Raw content:", raw_content_decoded)
+
+        
+
         
 
 
